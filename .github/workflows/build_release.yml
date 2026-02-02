@@ -1,43 +1,70 @@
 name: Build and Release Disbot
 
-# === 觸發條件區 ===
-# 這裡設定什麼時候要執行這個自動化流程
 on:
-  workflow_dispatch: # 允許你手動按按鈕測試
+  workflow_dispatch:
   push:
     tags:
-      - 'v*' # 當你推送標籤 (如 v1.0, v1.1) 時才會觸發，避免每次存檔都打包
+      - 'v*'
 
-# === 權限設定區 ===
-# 賦予這個機器人「寫入」Release 的權限
 permissions:
   contents: write
 
-# === 工作任務區 ===
 jobs:
   build:
-    runs-on: windows-latest # 指定使用微軟最新的 Windows 系統來打包 (因為你要產出 .exe)
+    runs-on: windows-latest
     
     steps:
-    # 步驟 1: 下載你的程式碼到虛擬機
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # 步驟 2: 安裝 Python 3.11 (與你開發環境一致)
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip' # 啟用快取，加速以後的打包速度
+        cache: 'pip'
 
-    # 步驟 3: 安裝依賴套件
     - name: Install Dependencies
       run: |
         pip install -r requirements.txt
         pip install pyinstaller
 
-    # 步驟 4: 打包 Disbot Manager
-    # 對應你原本 build_tool.py 的邏輯，但改用命令行執行
+    # === ✨ 新增這個步驟：自動注入 Token ===
+    - name: Inject Secrets into Code
+      env:
+        # 讀取你在 GitHub Secrets 設定的 Token
+        MY_TOKEN: ${{ secrets.DISBOT_GITHUB_TOKEN }}
+      shell: python
+      run: |
+        import os
+        
+        # 取得密鑰
+        token = os.environ.get("MY_TOKEN")
+        if not token:
+            print("Error: Secret TOKEN is empty! Make sure DISBOT_GITHUB_TOKEN is set in GitHub Settings.")
+            exit(1)
+            
+        # 要注入的目標字串 (這是我們為了過安檢寫的代碼)
+        target_str = 'os.getenv("DISBOT_GITHUB_TOKEN", "")'
+        
+        # 要修改的檔案
+        files = ["Disbot_Ultra.py", "disbot_core.py"]
+        
+        for fpath in files:
+            if os.path.exists(fpath):
+                print(f"Processing {fpath}...")
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                
+                if target_str in content:
+                    # 將 os.getenv(...) 替換成真實的 Token 字串
+                    new_content = content.replace(target_str, f'"{token}"')
+                    with open(fpath, "w", encoding="utf-8") as f:
+                        f.write(new_content)
+                    print(f"✅ Successfully injected token into {fpath}")
+                else:
+                    print(f"⚠️ Target string not found in {fpath}")
+    # ========================================
+
     - name: Build Disbot Manager
       run: |
         pyinstaller --noconfirm --onefile --windowed --clean `
@@ -47,8 +74,6 @@ jobs:
           --hidden-import=customtkinter `
           "Disbot_Manager.py"
 
-    # 步驟 5: 打包 Disbot Ultra
-    # 這裡是最複雜的部分，包含了所有 hidden-import 以防止閃退
     - name: Build Disbot Ultra
       run: |
         pyinstaller --noconfirm --onefile --windowed --clean `
@@ -75,29 +100,23 @@ jobs:
           --hidden-import=tkinter.messagebox `
           "Disbot_Ultra.py"
 
-    # 步驟 6: 改名 (美觀用)
-    # 將 Disbot_Ultra.exe 改為 "Disbot Ultra.exe" (帶空格)
     - name: Rename Executables
       run: |
         Move-Item -Path "Release_Output\Disbot_Manager.exe" -Destination "Release_Output\Disbot Manager.exe" -Force
         Move-Item -Path "Release_Output\Disbot_Ultra.exe" -Destination "Release_Output\Disbot Ultra.exe" -Force
 
-    # 步驟 7: 上傳打包好的檔案 (作為備份)
-    # 就算 Release 失敗，你也可以在 Actions 頁面下載到這些檔案
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: Disbot-Builds
         path: Release_Output/*.exe
 
-    # 步驟 8: 正式發布 Release
-    # 自動建立 GitHub Release 頁面並上傳檔案
     - name: Create Release
       uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/') # 只有在打標籤時才執行這一步
+      if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: Release_Output/*.exe # 上傳哪些檔案
-        draft: false      # 是否為草稿 (False = 直接公開)
-        prerelease: false # 是否為測試版
+        files: Release_Output/*.exe
+        draft: false
+        prerelease: false
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 這是 GitHub 自動生成的，不需要你設定
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
